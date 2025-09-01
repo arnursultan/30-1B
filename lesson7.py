@@ -57,3 +57,43 @@ class CRUDApp(QWidget):
         layout.addWidget(self.search_input)
 
         self.users_list = QListWidget()
+        self.users_list.itemClicked.connect(self.load_user)
+        layout.addWidget(self.users_list)
+
+        self.counter_label = QLabel("Записей: 0")
+        layout.addWidget(self.counter_label)
+
+        self.setLayout(layout)
+        self.load_users()
+
+    def create_table(self):
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                email VARCHAR(100) NOT NULL UNIQUE
+            )
+        """)
+        self.conn.commit()
+
+    def validate_inputs(self, name, email, user_id=None):
+        if not re.match(r"^[A-Za-zА-Яа-яЁё\s\-]+$", name):
+            QMessageBox.warning(self, "Ошибка", "Имя может содержать только буквы, пробелы и дефисы.")
+            return False
+
+        if not re.match(r"^[\w\.-]+@[\w\.-]+\.\w+$", email):
+            QMessageBox.warning(self, "Ошибка", "Введите корректный email.")
+            return False
+
+        query = "SELECT id FROM users WHERE email = %s"
+        self.cursor.execute(query, (email, ))
+        existing = self.cursor.fetchone()
+
+        if existing and (user_id is None or existing[0] != user_id):
+            QMessageBox.warning(self, "Ошибка", "Такой email уеж существует.")
+            return False
+
+        return True
+
+    def add_user(self):
+        name = self.name_input.text().strip()
