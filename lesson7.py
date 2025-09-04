@@ -186,3 +186,6 @@ if __name__ == "__main__":
     window = CRUDApp()
     window.show()
     sys.exit(app.exec())
+
+
+
