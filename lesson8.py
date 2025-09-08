@@ -32,7 +32,7 @@ from PyQt6.QtCore import Qt
 # Конфиг — храним имя игрока между запусками
 CONFIG_FILE = "config.json"
 
-# Настройки подключения к PostgreSQL (для урока — просто в коде)
+# Настройки подключения к PostgreSQL
 DB_SETTINGS = {
     "dbname": "LibraryGame",
     "user": "postgres",
