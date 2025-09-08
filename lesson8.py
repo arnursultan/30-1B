@@ -1,3 +1,21 @@
+#  Library Quest RPG 4.0 — учебный мини-проект на PyQt6 + PostgreSQL
+#    Небольшая «геймифицированная» библиотека: берём/возвращаем книги,
+#    копим XP/монеты, получаем ачивки и покупаем предметы в магазине.
+
+#  Как запустить:
+#    1) Установите зависимости:
+#         pip install PyQt6 psycopg2
+#    2) Поднимите PostgreSQL и создайте БД:
+#         LibraryGame
+#    3) Проверьте настройки подключения в DB_SETTINGS ниже.
+#    4) Положите рядом ресурсы: hero.png, take.gif, return.gif,
+#       event_good.gif, event_bad.gif, levelup.gif, achievement.gif.
+#    5) Запустите:
+#         python main.py
+
+#  Примечания:
+#    • Все таблицы создаются автоматически при первом запуске.
+
 import sys
 import os
 import json
@@ -11,8 +29,10 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QPixmap, QMovie
 from PyQt6.QtCore import Qt
 
+# Конфиг — храним имя игрока между запусками
 CONFIG_FILE = "config.json"
 
+# Настройки подключения к PostgreSQL (для урока — просто в коде)
 DB_SETTINGS = {
     "dbname": "LibraryGame",
     "user": "postgres",
@@ -22,17 +42,20 @@ DB_SETTINGS = {
 }
 
 def resource_path(relative_path):
+    # Ищем ресурсы и в dev-режиме, и в сборке PyInstaller (_MEIPASS).
     if hasattr(sys, '_MEIPASS'):
         return os.path.join(sys._MEIPASS, relative_path)
     return os.path.join(os.path.abspath("."), relative_path)
 
 class Database:
+    # Всё про БД: создаём таблицы, читаем/пишем данные, немножко логики.
     def __init__(self):
         self.conn = psycopg2.connect(**DB_SETTINGS)
         self.cur = self.conn.cursor()
         self._init_tables()
 
     def _init_tables(self):
+        # Создаём таблицы при первом запуске + кидаем стартовые предметы в магазин.
         self.cur.execute("""
         CREATE TABLE IF NOT EXISTS students (
             id SERIAL PRIMARY KEY,
@@ -83,6 +106,7 @@ class Database:
         """)
         self.conn.commit()
 
+        # Если магазин пуст — добавим стартовые предметы
         self.cur.execute("SELECT COUNT(*) FROM items;")
         if self.cur.fetchone()[0] == 0:
             self.cur.executemany("INSERT INTO items(name, price, effect) VALUES (%s,%s,%s);", [
@@ -93,19 +117,20 @@ class Database:
             self.conn.commit()
 
     def init_student(self, name):
+        # Возвращаем id студента; если новый — создаём запись.
         self.cur.execute("SELECT id FROM students WHERE name=%s;", (name,))
         row = self.cur.fetchone()
         if row:
             return row[0]
-        else:
-            self.cur.execute(
-                "INSERT INTO students(name) VALUES(%s) RETURNING id;", (name,)
-            )
-            student_id = self.cur.fetchone()[0]
-            self.conn.commit()
-            return student_id
+        self.cur.execute(
+            "INSERT INTO students(name) VALUES(%s) RETURNING id;", (name,)
+        )
+        student_id = self.cur.fetchone()[0]
+        self.conn.commit()
+        return student_id
 
     def get_student_stats(self, student_id):
+        # Достаём базовые статы игрока одним запросом.
         self.cur.execute("""
         SELECT xp, level, coins, books_taken, achievements 
         FROM students WHERE id=%s;
@@ -113,6 +138,7 @@ class Database:
         return self.cur.fetchone()
 
     def update_xp(self, student_id, amount, coins=0, books=0):
+        # Универсальный апдейтер: XP/уровень/монеты/счётчик книг, выдаёт ачивки и отдаёт список «событий» для UI.
         self.cur.execute("""
         SELECT xp, level, coins, books_taken, achievements 
         FROM students WHERE id=%s;
@@ -124,15 +150,18 @@ class Database:
         new_achievements = achievements.split(",") if achievements else []
 
         levelup = False
+        # Простая шкала: каждые 100 XP — новый уровень
         while xp >= 100:
             xp -= 100
             level += 1
             levelup = True
 
+        # Страховка от отрицательных значений
         if xp < 0: xp = 0
         if current_coins < 0: current_coins = 0
 
         events = []
+        # Небольшая «геймификация» — выдаём достижения
         if books_taken >= 1 and "Первая книга" not in new_achievements:
             new_achievements.append("Первая книга")
             events.append(("🏆 Ачивка: Первая книга!", "achievement.gif"))
@@ -157,6 +186,7 @@ class Database:
         return xp, level, current_coins, events
 
     def get_all_books(self):
+        # Все книги + авторы, чтобы отрисовать список в UI.
         self.cur.execute("""
         SELECT b.id, b.title, COALESCE(a.name, 'Неизвестен'), b.is_taken
         FROM books b
@@ -166,6 +196,7 @@ class Database:
         return self.cur.fetchall()
 
     def get_my_books(self, student_id):
+        # Книги, которые числятся за конкретным студентом.
         self.cur.execute("""
         SELECT b.id, b.title FROM books b
         JOIN students_books sb ON sb.book_id = b.id
@@ -174,19 +205,23 @@ class Database:
         return self.cur.fetchall()
 
     def get_authors(self):
+        # Справочник авторов как есть.
         self.cur.execute("SELECT id, name FROM authors ORDER BY id;")
         return self.cur.fetchall()
 
     def add_author(self, name):
+        # Добавляем автора.
         self.cur.execute("INSERT INTO authors(name) VALUES(%s);", (name,))
         self.conn.commit()
 
     def add_book(self, title, author_id):
+        # Добавляем книгу с привязкой к автору.
         self.cur.execute("INSERT INTO books(title, author_id) VALUES(%s, %s);",
                          (title, author_id))
         self.conn.commit()
 
     def take_book(self, student_id, book_id):
+        # Берём книгу, если свободна. Начисления XP/coins делаем в UI — здесь только факт выдачи книги.
         self.cur.execute("SELECT is_taken FROM books WHERE id=%s;", (book_id,))
         row = self.cur.fetchone()
         if not row:
@@ -200,6 +235,7 @@ class Database:
         return "✅ Вы взяли книгу! +10 XP, +1 монета"
 
     def return_book(self, student_id, book_id):
+        # Возврат книги: отвязываем, освобождаем.
         self.cur.execute("DELETE FROM students_books WHERE student_id=%s AND book_id=%s;",
                          (student_id, book_id))
         self.cur.execute("UPDATE books SET is_taken=FALSE WHERE id=%s;", (book_id,))
@@ -207,10 +243,12 @@ class Database:
         return "📖 Вы вернули книгу! +5 XP, +2 монеты"
 
     def get_items(self):
+        # Магазинные позиции.
         self.cur.execute("SELECT id, name, price, effect FROM items ORDER BY id;")
         return self.cur.fetchall()
 
     def buy_item(self, student_id, item_id):
+        # Покупка предмета: проверяем монеты, списываем, увеличиваем количество.
         self.cur.execute("SELECT price, effect FROM items WHERE id=%s;", (item_id,))
         row = self.cur.fetchone()
         if not row:
@@ -233,6 +271,7 @@ class Database:
         return f"🛒 Куплен товар за {price} монет!"
 
     def get_inventory(self, student_id):
+        # Инвентарь игрока: предметы + их количество.
         self.cur.execute("""
         SELECT i.id, i.name, i.effect, si.qty 
         FROM student_items si
@@ -242,14 +281,26 @@ class Database:
         return self.cur.fetchall()
 
     def use_item(self, student_id, item_id):
+        # Применение предмета. Эффект в формате "xp+N" или "coins+N".
         self.cur.execute("SELECT effect FROM items WHERE id=%s;", (item_id,))
         row = self.cur.fetchone()
         if not row:
             return "❌ Нет такого предмета!"
         effect = row[0]
-        self.cur.execute("UPDATE student_items SET qty=qty-1 WHERE student_id=%s AND item_id=%s;", (student_id, item_id))
-        self.cur.execute("DELETE FROM student_items WHERE qty<=0;")
+
+        # Сначала тратим предмет…
+        self.cur.execute(
+            "UPDATE student_items SET qty=qty-1 WHERE student_id=%s AND item_id=%s;",
+            (student_id, item_id)
+        )
+        # Улучшение: чистим только записи текущего игрока
+        self.cur.execute(
+            "DELETE FROM student_items WHERE student_id=%s AND qty<=0;",
+            (student_id,)
+        )
         self.conn.commit()
+
+        # …потом накатываем эффект
         if effect.startswith("xp+"):
             val = int(effect.split("+")[1])
             self.update_xp(student_id, val)
@@ -261,6 +312,7 @@ class Database:
         return "❌ Эффект неизвестен"
 
 class EventDialog(QDialog):
+    # Окошко для красивых «событий» с гифкой и подписью.
     def __init__(self, text, gif_path):
         super().__init__()
         self.setWindowTitle("🎬 Событие")
@@ -280,6 +332,7 @@ class EventDialog(QDialog):
         self.setLayout(layout)
 
 class LibraryGame(QWidget):
+    # Основное окно игры: списки книг, кнопки, справа — портрет и статы.
     def __init__(self, db, student_id, student_name):
         super().__init__()
         self.db = db
@@ -288,25 +341,29 @@ class LibraryGame(QWidget):
         self.setWindowTitle(f"📚 Library Quest RPG 4.0 — {self.student_name}")
         self.setGeometry(200, 200, 1200, 650)
 
+        # Две колонки: слева списки и кнопки, справа — статы
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
         right_layout = QVBoxLayout()
 
+        # «Аватар» игрока
         self.char_label = QLabel()
         pixmap = QPixmap(resource_path("hero.png"))
         self.char_label.setPixmap(pixmap.scaled(200, 200, Qt.AspectRatioMode.KeepAspectRatio))
         right_layout.addWidget(self.char_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
+        # Статы справа
         self.level_label = QLabel()
         right_layout.addWidget(self.level_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.xp_bar = QProgressBar()
-        self.xp_bar.setMaximum(100)
+        self.xp_bar.setMaximum(100)  # уровень растёт каждые 100 XP
         right_layout.addWidget(self.xp_bar)
 
         self.coins_label = QLabel()
         right_layout.addWidget(self.coins_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
+        # Списки книг слева
         left_layout.addWidget(QLabel("📚 Все книги:"))
         self.list_all = QListWidget()
         left_layout.addWidget(self.list_all)
@@ -315,6 +372,7 @@ class LibraryGame(QWidget):
         self.list_my = QListWidget()
         left_layout.addWidget(self.list_my)
 
+        # Кнопки действий
         btn_layout1 = QHBoxLayout()
         self.btn_take = QPushButton("➕ Взять книгу")
         self.btn_return = QPushButton("❌ Вернуть книгу")
@@ -343,6 +401,7 @@ class LibraryGame(QWidget):
         main_layout.addLayout(right_layout, 30)
         self.setLayout(main_layout)
 
+        # Сигналы Qt
         self.btn_take.clicked.connect(self.take_book)
         self.btn_return.clicked.connect(self.return_book)
         self.btn_event.clicked.connect(self.random_event)
@@ -351,9 +410,11 @@ class LibraryGame(QWidget):
         self.btn_shop.clicked.connect(self.open_shop)
         self.btn_inv.clicked.connect(self.open_inventory)
 
+        # Первый апдейт UI
         self.refresh()
 
     def refresh(self):
+        # Обновляем списки и правую панель со статами.
         self.list_all.clear()
         for book_id, title, author, taken in self.db.get_all_books():
             status = "занята" if taken else "свободна"
@@ -369,10 +430,13 @@ class LibraryGame(QWidget):
         self.coins_label.setText(f"💰 Монеты: {coins}")
 
     def show_event(self, text, gif_file):
+        # Показ всплывающего события с гифкой.
         dlg = EventDialog(text, resource_path(gif_file))
         dlg.exec()
 
     def take_book(self):
+
+        # Берём выбранную книгу. Начисляем 10 XP, 1 монету и +1 к счётчику взятых книг.
         item = self.list_all.currentItem()
         if not item: return
         book_id = int(item.text().split(".")[0])
@@ -384,6 +448,7 @@ class LibraryGame(QWidget):
         self.refresh()
 
     def return_book(self):
+        # Возвращаем книгу. Начисляем 5 XP и 2 монеты.
         item = self.list_my.currentItem()
         if not item: return
         book_id = int(item.text().split(".")[0])
@@ -395,6 +460,7 @@ class LibraryGame(QWidget):
         self.refresh()
 
     def random_event(self):
+        # Случайное событие — немного драмы в спокойной библиотеке :)
         events_list = [
             ("Вы нашли редкую книгу! +20 XP 🎉", 20, 5, "event_good.gif"),
             ("Книга утеряна! -10 XP 😱", -10, -3, "event_bad.gif"),
@@ -409,12 +475,14 @@ class LibraryGame(QWidget):
         self.refresh()
 
     def add_author(self):
+        # Простой диалог: спросили имя — добавили автора.
         name, ok = QInputDialog.getText(self, "Добавить автора", "Имя автора:")
         if ok and name:
             self.db.add_author(name)
             QMessageBox.information(self, "Успех", f"Автор '{name}' добавлен!")
 
     def add_book(self):
+        # Сначала название, потом выбор автора из списка. Если авторов нет — предупреждаем.
         title, ok = QInputDialog.getText(self, "Добавить книгу", "Название книги:")
         if not ok or not title: return
         authors = self.db.get_authors()
@@ -430,6 +498,7 @@ class LibraryGame(QWidget):
         self.refresh()
 
     def open_shop(self):
+        # Выбор предмета из магазина и попытка покупки.
         items = self.db.get_items()
         choices = [f"{i[0]}. {i[1]} — {i[2]} монет" for i in items]
         choice, ok = QInputDialog.getItem(self, "🛒 Магазин", "Выберите товар:", choices, 0, False)
@@ -440,6 +509,7 @@ class LibraryGame(QWidget):
         self.refresh()
 
     def open_inventory(self):
+        # Показываем инвентарь и даём применить предмет (если есть).
         inv = self.db.get_inventory(self.student_id)
         if not inv:
             QMessageBox.information(self, "Инвентарь", "🎒 Пусто")
@@ -453,9 +523,11 @@ class LibraryGame(QWidget):
         self.refresh()
 
 if __name__ == "__main__":
+    # Стартуем Qt-приложение
     app = QApplication(sys.argv)
     db = Database()
 
+    # Читаем имя из конфига или спрашиваем у пользователя
     student_name = None
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -466,18 +538,15 @@ if __name__ == "__main__":
         if not ok or not name:
             sys.exit()
         student_name = name
+        # Сохраняем, чтобы в следующий раз не спрашивать
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump({"student_name": student_name}, f, ensure_ascii=False)
 
+    # Гарантируем наличие игрока в БД, получаем его id
     student_id = db.init_student(student_name)
 
+    # Показываем главное окно и поехали
     game = LibraryGame(db, student_id, student_name)
     game.show()
 
     sys.exit(app.exec())
-
-
-
-
-
-
